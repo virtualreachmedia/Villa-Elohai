@@ -333,23 +333,39 @@ footer{background:var(--deep);border-top:0.5px solid rgba(255,255,255,0.08);padd
 
   function parseIcal(text) {
     bookedDates.clear();
-    const blocks = text.split('BEGIN:VEVENT');
-    blocks.shift();
-    blocks.forEach(block => {
-      block = block.replace(/
-[ 	]/g, '').replace(/
-[ 	]/g, '');
-      const sMatch = block.match(/DTSTART[^:]*:(\d{8})/);
-      const eMatch = block.match(/DTEND[^:]*:(\d{8})/);
-      if (!sMatch || !eMatch) return;
-      const toDate = s => new Date(+s.slice(0,4), +s.slice(4,6)-1, +s.slice(6,8));
-      const start  = toDate(sMatch[1]);
-      const end    = toDate(eMatch[1]);
-      for (let d = new Date(start); d < end; d.setDate(d.getDate()+1)) {
-        bookedDates.add(d.toISOString().slice(0,10));
+    const lines  = text.replace(/
+/g,'
+').replace(//g,'
+').split('
+');
+    let inEvent  = false;
+    let startStr = null, endStr = null;
+
+    lines.forEach(line => {
+      if (line === 'BEGIN:VEVENT') { inEvent = true; startStr = null; endStr = null; return; }
+      if (line === 'END:VEVENT') {
+        if (startStr && endStr) {
+          const toDate = s => new Date(+s.slice(0,4), +s.slice(4,6)-1, +s.slice(6,8));
+          const start  = toDate(startStr);
+          const end    = toDate(endStr);
+          for (let d = new Date(start); d < end; d.setDate(d.getDate()+1)) {
+            bookedDates.add(d.toISOString().slice(0,10));
+          }
+        }
+        inEvent = false; return;
+      }
+      if (!inEvent) return;
+      // Match DTSTART;VALUE=DATE:20260605 or DTSTART:20260605
+      if (line.startsWith('DTSTART')) {
+        const m = line.match(/:(\d{8})$/);
+        if (m) startStr = m[1];
+      }
+      if (line.startsWith('DTEND')) {
+        const m = line.match(/:(\d{8})$/);
+        if (m) endStr = m[1];
       }
     });
-    console.log('Booked dates:', bookedDates.size);
+    console.log('Booked dates parsed:', bookedDates.size, [...bookedDates].slice(0,5));
   }
 
   async function fetchCalendar() {
@@ -362,7 +378,7 @@ footer{background:var(--deep);border-top:0.5px solid rgba(255,255,255,0.08);padd
         parseIcal(text);
         status.textContent = '';
       } else {
-        throw new Error('Invalid calendar data');
+        throw new Error('Invalid data');
       }
     } catch(e) {
       console.error('Calendar error:', e);
@@ -389,11 +405,11 @@ footer{background:var(--deep);border-top:0.5px solid rgba(255,255,255,0.08);padd
     }
 
     for (let day = 1; day <= daysInMonth; day++) {
-      const mm      = String(month+1).padStart(2,'0');
-      const dd      = String(day).padStart(2,'0');
-      const dateStr = year + '-' + mm + '-' + dd;
-      const dateObj = new Date(year, month, day);
-      const isPast  = dateObj < today;
+      const mm       = String(month+1).padStart(2,'0');
+      const dd       = String(day).padStart(2,'0');
+      const dateStr  = year + '-' + mm + '-' + dd;
+      const dateObj  = new Date(year, month, day);
+      const isPast   = dateObj < today;
       const isBooked = bookedDates.has(dateStr);
 
       const cell = document.createElement('div');
@@ -409,9 +425,7 @@ footer{background:var(--deep);border-top:0.5px solid rgba(255,255,255,0.08);padd
         cell.title = 'Available — click to inquire on Facebook';
         cell.addEventListener('mouseover', () => cell.style.opacity='0.7');
         cell.addEventListener('mouseout',  () => cell.style.opacity='1');
-        cell.addEventListener('click', () => {
-          window.open('https://www.facebook.com/villaelohai/', '_blank');
-        });
+        cell.addEventListener('click', () => window.open('https://www.facebook.com/villaelohai/', '_blank'));
       }
       grid.appendChild(cell);
     }
