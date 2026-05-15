@@ -325,10 +325,13 @@ footer{background:var(--deep);border-top:0.5px solid rgba(255,255,255,0.08);padd
 
 <script>
 (function() {
-  // Uses a free CORS proxy to fetch the public iCal feed from Google Calendar
-  // No API key or billing required
+  // Fetches public iCal via multiple CORS proxies with fallback
   const ICAL_URL = 'https://calendar.google.com/calendar/ical/aq58oholioetgt1o93v0d9ptpnnaskp8%40import.calendar.google.com/public/basic.ics';
-  const PROXY    = 'https://corsproxy.io/?';
+  const PROXIES  = [
+    'https://api.allorigins.win/raw?url=',
+    'https://corsproxy.io/?',
+    'https://cors-anywhere.herokuapp.com/'
+  ];
 
   let currentDate = new Date();
   let bookedDates = new Set();
@@ -338,40 +341,58 @@ footer{background:var(--deep);border-top:0.5px solid rgba(255,255,255,0.08);padd
 
   function parseIcal(text) {
     bookedDates.clear();
-    const events = text.split('BEGIN:VEVENT');
-    events.shift(); // remove header
+    // Split by VEVENT blocks
+    const blocks = text.split('BEGIN:VEVENT');
+    blocks.shift();
+    blocks.forEach(block => {
+      // Handle multi-line folded values
+      block = block.replace(/
+[ 	]/g, '').replace(/
+[ 	]/g, '');
 
-    events.forEach(event => {
-      // Get DTSTART and DTEND
-      const startMatch = event.match(/DTSTART(?:;[^:]*)?:(\d{8})/);
-      const endMatch   = event.match(/DTEND(?:;[^:]*)?:(\d{8})/);
-      if (!startMatch || !endMatch) return;
+      const sMatch = block.match(/DTSTART[^:]*:(\d{8})/);
+      const eMatch = block.match(/DTEND[^:]*:(\d{8})/);
+      if (!sMatch || !eMatch) return;
 
-      const parseDate = s => new Date(
-        parseInt(s.slice(0,4)),
-        parseInt(s.slice(4,6)) - 1,
-        parseInt(s.slice(6,8))
-      );
+      const toDate = s => new Date(+s.slice(0,4), +s.slice(4,6)-1, +s.slice(6,8));
+      const start  = toDate(sMatch[1]);
+      const end    = toDate(eMatch[1]);
 
-      const start = parseDate(startMatch[1]);
-      const end   = parseDate(endMatch[1]);
-
-      for (let d = new Date(start); d < end; d.setDate(d.getDate() + 1)) {
+      for (let d = new Date(start); d < end; d.setDate(d.getDate()+1)) {
         bookedDates.add(d.toISOString().slice(0,10));
       }
     });
+    console.log('Booked dates loaded:', bookedDates.size);
+  }
+
+  async function tryFetch(proxyIndex) {
+    if (proxyIndex >= PROXIES.length) throw new Error('All proxies failed');
+    const url = PROXIES[proxyIndex] + encodeURIComponent(ICAL_URL);
+    const res  = await fetch(url, {cache: 'no-store'});
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return res.text();
   }
 
   async function fetchCalendar() {
     const status = document.getElementById('cal-status');
     status.textContent = 'Loading availability...';
-    try {
-      const res  = await fetch(PROXY + encodeURIComponent(ICAL_URL));
-      const text = await res.text();
-      parseIcal(text);
+    let loaded = false;
+    for (let i = 0; i < PROXIES.length; i++) {
+      try {
+        const text = await tryFetch(i);
+        if (text.includes('BEGIN:VCALENDAR')) {
+          parseIcal(text);
+          loaded = true;
+          break;
+        }
+      } catch(e) {
+        console.warn('Proxy ' + i + ' failed:', e.message);
+      }
+    }
+    if (!loaded) {
+      status.innerHTML = 'Live availability unavailable. <a href="https://www.facebook.com/villaelohai/" target="_blank" style="color:var(--earth)">Message us on Facebook</a> to check dates.';
+    } else {
       status.textContent = '';
-    } catch(e) {
-      status.textContent = 'Could not load live availability. Please contact us to check dates.';
     }
     renderCalendar();
   }
@@ -386,40 +407,38 @@ footer{background:var(--deep);border-top:0.5px solid rgba(255,255,255,0.08);padd
     label.textContent = MONTHS[month] + ' ' + year;
     grid.innerHTML = '';
 
-    const firstDay   = new Date(year, month, 1).getDay();
-    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    const firstDay    = new Date(year, month, 1).getDay();
+    const daysInMonth = new Date(year, month+1, 0).getDate();
 
+    // Empty leading cells
     for (let i = 0; i < firstDay; i++) {
-      grid.innerHTML += '<div></div>';
+      const empty = document.createElement('div');
+      grid.appendChild(empty);
     }
 
     for (let day = 1; day <= daysInMonth; day++) {
-      const dateStr = `${year}-${String(month+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+      const dateStr = year + '-' + String(month+1).padStart(2,'0') + '-' + String(day).padStart(2,'0');
       const dateObj = new Date(year, month, day);
       const isPast  = dateObj < today;
       const isBooked = bookedDates.has(dateStr);
 
-      let bg, border, color, cursor, title;
-      if (isPast) {
-        bg='var(--sand)'; border='var(--stone)'; color='var(--stone)'; cursor='default'; title='';
-      } else if (isBooked) {
-        bg='#F8D7DA'; border='#C97A80'; color='#8B3A40'; cursor='default'; title='Booked';
-      } else {
-        bg='#D4EDDA'; border='#7DB88A'; color='#2D6A3F'; cursor='pointer'; title='Available — click to inquire';
-      }
-
       const cell = document.createElement('div');
-      cell.title = title;
-      cell.style.cssText = `text-align:center;padding:0.6rem 0.2rem;background:${bg};border:1px solid ${border};border-radius:3px;font-size:13px;color:${color};font-family:'Plus Jakarta Sans',sans-serif;cursor:${cursor};transition:opacity 0.15s;`;
       cell.textContent = day;
 
-      if (!isPast && !isBooked) {
-        cell.addEventListener('mouseover', () => cell.style.opacity='0.75');
-        cell.addEventListener('mouseout',  () => cell.style.opacity='1');
+      if (isPast) {
+        cell.style.cssText = 'text-align:center;padding:0.65rem 0.2rem;background:var(--sand);border:1px solid var(--stone);border-radius:3px;font-size:13px;color:var(--stone);font-family:Plus Jakarta Sans,sans-serif;';
+      } else if (isBooked) {
+        cell.style.cssText = 'text-align:center;padding:0.65rem 0.2rem;background:#F8D7DA;border:1px solid #C97A80;border-radius:3px;font-size:13px;color:#8B3A40;font-family:Plus Jakarta Sans,sans-serif;';
+        cell.title = 'Booked';
+      } else {
+        cell.style.cssText = 'text-align:center;padding:0.65rem 0.2rem;background:#D4EDDA;border:1px solid #7DB88A;border-radius:3px;font-size:13px;color:#2D6A3F;font-family:Plus Jakarta Sans,sans-serif;cursor:pointer;transition:opacity 0.15s;';
+        cell.title = 'Available — click to inquire';
+        cell.addEventListener('mouseover', () => cell.style.opacity = '0.7');
+        cell.addEventListener('mouseout',  () => cell.style.opacity = '1');
         cell.addEventListener('click', () => {
-          const dateField = document.getElementById('inquiry-date');
-          if (dateField) dateField.value = dateStr;
-          document.querySelector('.cta-section').scrollIntoView({behavior:'smooth'});
+          // Open Facebook with a pre-filled message hint
+          const msg = 'Hi! I would like to inquire about availability for ' + dateStr + '.';
+          window.open('https://www.facebook.com/villaelohai/', '_blank');
         });
       }
       grid.appendChild(cell);
@@ -431,6 +450,7 @@ footer{background:var(--deep);border-top:0.5px solid rgba(255,255,255,0.08);padd
     renderCalendar();
   };
 
+  // Kick off
   fetchCalendar();
 })();
 </script>
